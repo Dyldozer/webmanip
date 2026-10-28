@@ -1,0 +1,9 @@
+# Browser profile: cookies, logins, cache. Never commit.
+WebView2Data/
+
+# Your own saved functions and their exported code (work-specific)
+functions.json
+MyFunctions.ahk
+
+# Output of "Run for each row"
+Results/
