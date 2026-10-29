@@ -194,5 +194,9 @@ class TicketApp {
 		if this.HasOwnProp('views')
 			for wm in this.views
 				wm.SetBounds(tx, wy, tw, h - m - wy)
+
+		; repaint the whole window and every control so nothing is left half-drawn
+		; RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW
+		DllCall('RedrawWindow', 'ptr', this.gui.Hwnd, 'ptr', 0, 'ptr', 0, 'uint', 0x1 | 0x4 | 0x80 | 0x100)
 	}
 }
