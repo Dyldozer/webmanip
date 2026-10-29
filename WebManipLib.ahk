@@ -92,6 +92,16 @@ class WebManip {
 	Title => this.wv.DocumentTitle
 	/** Runs JavaScript in the top page and returns the result (objects come back as Map/Array). */
 	JS(code) => JSON.Parse(this.wv.ExecuteScriptAsync(code).await())
+	/**
+	 * Cookies the browser holds for a web address (all sites if url is ''), including HttpOnly ones.
+	 * Returns a Map of name -> value (names are not case sensitive).
+	 */
+	Cookies(url := '') {
+		m := Map(), m.CaseSense := false
+		for c in this.wv.CookieManager.GetCookiesAsync(url).await()
+			m[c.Name] := c.Value
+		return m
+	}
 	Fill() => this.ctrl.Fill()
 	SetBounds(x, y, w, h) {
 		rc := Buffer(16), NumPut('int', x, 'int', y, 'int', x + w, 'int', y + h, rc)

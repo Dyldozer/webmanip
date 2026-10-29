@@ -1,6 +1,7 @@
 #Requires AutoHotkey v2.0 64-bit
 #SingleInstance Force
 #Include %A_ScriptDir%\WebManipLib.ahk
+#Include %A_ScriptDir%\TicketLib.ahk        ; this project's functions (row pages, gather data, HTTP)
 #Include *i %A_ScriptDir%\MyFunctions.ahk   ; functions exported from WebManipBuilder.ahk
 
 /************************************************************************
@@ -15,6 +16,7 @@
  *   app.Fields['Ticket'].Value   read/write a field: Ticket, Description, Account, Category, Symptom
  *   app.List                     the ListView (app.List.Add(, 'col1', 'col2', ...))
  *   app.ShowTab('AOS')           switch tab by name or number
+ *   app.AddTab('Name ✕', url)    open a temporary tab; app.RemoveTab(wm) closes it
  *
  * Pop-ups (like sign-in windows) open in an extra "Pop-up ✕" tab and close by themselves
  * when the site is done with them. Right-click a pop-up tab to close it yourself.
@@ -29,17 +31,25 @@ TABS := [
 ]
 
 ; ---- Button captions, top to bottom. Add or remove as you like. ----
-BUTTONS := ['Button 1', 'Button 2', 'Button 3', 'Button 4', 'Button 5',
+BUTTONS := ['Gather data', 'Button 2', 'Button 3', 'Button 4', 'Button 5',
 	'Button 6', 'Button 7', 'Button 8', 'Button 9', 'Button 10']
 
 app := TicketApp(TABS, BUTTONS)
+
+; ---- Placeholder rows so the list isn't empty. Remove these when you load real tickets. ----
+; Columns: Ticket, Description, Account, Category, Symptom
+app.List.Add(, 'INC0001001', 'Printer offline', '1000234', 'Hardware', 'No power')
+app.List.Add(, 'INC0001002', 'Cannot log in', '1000871', 'Access', 'Password expired')
+app.List.Add(, 'INC0001003', 'Slow internet', '1000502', 'Network', 'Drops every hour')
+app.List.ModifyCol()
 
 ; ---- What each button does. n = button number (1 = top). ----
 ButtonClicked(n, *) {
 	try {
 		switch n {
-		; case 1: app.Web['Remedy'].Click('#search')
-		; case 2: app.Fields['Account'].Value := app.Web['AOS'].GetText('#acct')
+		case 1: GatherData(app)   ; settings are in TicketLib.ahk
+		; case 2: app.Web['Remedy'].Click('#search')
+		; case 3: app.Fields['Account'].Value := app.Web['AOS'].GetText('#acct')
 		default:
 			ToolTip('Button ' n ' is not set up yet.')
 			SetTimer(() => ToolTip(), -1500)
@@ -52,6 +62,18 @@ ButtonClicked(n, *) {
 RowSelected(row) {
 	for i, key in ['Ticket', 'Description', 'Account', 'Category', 'Symptom']
 		app.Fields[key].Value := app.List.GetText(row, i)
+}
+
+; ---- Runs when you double-click a row. Opens that ticket's pages (set them in TicketLib.ahk). ----
+RowDoubleClicked(row) {
+	ticket := app.List.GetText(row, 1), account := app.List.GetText(row, 3)
+	try {
+		if !OpenRowPages(app, ticket, account) {
+			ToolTip('No pages set up yet. Fill in ROW_PAGES in TicketLib.ahk.')
+			SetTimer(() => ToolTip(), -2500)
+		}
+	} catch as e
+		MsgBox('Could not open the pages:`n`n' e.Message, 'Ticket Tool', 'Icon!')
 }
 
 
@@ -67,6 +89,7 @@ class TicketApp {
 		; left: list + fields
 		this.List := g.Add('ListView', 'Grid -Multi', ['Ticket', 'Description', 'Account', 'Category', 'Symptom'])
 		this.List.OnNotify(-101, ObjBindMethod(this, '_ListChanged'))   ; fires on click, arrow keys and code
+		this.List.OnEvent('DoubleClick', (lv, row) => row && RowDoubleClicked(row))
 		this.Fields := Map(), this.Fields.CaseSense := false
 		this.labels := Map()
 		for f in [['Ticket', 'Ticket number'], ['Description', 'Description'], ['Account', 'Account number'],
@@ -141,40 +164,58 @@ class TicketApp {
 		this._UrlChanged(this.views[i])
 	}
 
-	; ---- pop-ups (e.g. sign-in windows) open as an extra tab and close when they're done
-	_AddPopup(pop) {
-		pop.OnNavigated := ObjBindMethod(this, '_UrlChanged', pop)
-		pop.OnPopup := ObjBindMethod(this, '_AddPopup')
-		pop.OnClosed := ObjBindMethod(this, '_RemovePopup')
-		this.views.Push(pop), this.names.Push('Pop-up ✕')
-		this.tab.Add(['Pop-up ✕'])
-		if this.HasOwnProp('webRect')
-			pop.SetBounds(this.webRect*)
-		this.ShowTab(this.views.Length)
+	; ---- temporary tabs: pop-ups (e.g. sign-in windows) and tabs opened from code.
+	; They sit after the fixed tabs, close when the page closes itself, or on right-click.
+
+	/** Opens a temporary tab and returns its browser. Close it with RemoveTab(). */
+	AddTab(name := 'Tab ✕', url := '') {
+		wm := WebManip(this.gui.Hwnd, {env: this.views[1].env, hidden: true})
+		this._AddTemp(wm, name)
+		if url != ''
+			wm.Navigate(url, false)
+		return wm
 	}
 
-	_RemovePopup(pop) {
-		for i, wm in this.views
-			if wm = pop {
+	/** Closes a temporary tab. If it was showing, goes back to the tab you were on before. */
+	RemoveTab(wm) {
+		cur := this.Current, found := false
+		for i, v in this.views
+			if v = wm && i > this.Web.Count {
 				this.views.RemoveAt(i), this.names.RemoveAt(i)
 				this.tab.Delete(i)
+				found := true
 				break
 			}
-		pop.Close()
-		; go back to the tab that opened it
-		back := 1
-		for i, wm in this.views
-			if wm = pop.opener
+		wm.Close()
+		if !found
+			return
+		target := cur = wm ? wm.returnTo : cur, back := 1
+		for i, v in this.views
+			if v = target
 				back := i
 		this.ShowTab(back)
+	}
+
+	_AddPopup(pop) => this._AddTemp(pop, 'Pop-up ✕')
+
+	_AddTemp(wm, name) {
+		wm.returnTo := this.Current
+		wm.OnNavigated := ObjBindMethod(this, '_UrlChanged', wm)
+		wm.OnPopup := ObjBindMethod(this, '_AddPopup')
+		wm.OnClosed := ObjBindMethod(this, 'RemoveTab')
+		this.views.Push(wm), this.names.Push(name)
+		this.tab.Add([name])
+		if this.HasOwnProp('webRect')
+			wm.SetBounds(this.webRect*)
+		this.ShowTab(this.views.Length)
 	}
 
 	_TabRightClick(tab, item, isRightClick, x, y) {
 		tab.GetPos(&tx, &ty)
 		ht := Buffer(12, 0), NumPut('int', x - tx, 'int', y - ty, ht)
 		i := SendMessage(0x130D, 0, ht, tab) + 1   ; TCM_HITTEST: which tab was clicked
-		if i > this.Web.Count && i <= this.views.Length   ; pop-up tabs come after the fixed ones
-			this._RemovePopup(this.views[i])
+		if i > this.Web.Count && i <= this.views.Length   ; temporary tabs come after the fixed ones
+			this.RemoveTab(this.views[i])
 	}
 
 	GoUrl() {
