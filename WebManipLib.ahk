@@ -22,6 +22,9 @@ class WebManip {
 	__New(hostHwnd := 0, opts := {}) {
 		this.results := Map(), this.seq := 0, this.navDone := true, this.navOk := true
 		this.OnPicked := 0, this.OnNavigated := 0, this.OnLoaded := 0, this.gui := 0
+		; OnPopup(popupWm): set it to place pop-ups yourself (e.g. in a tab). Not set = pop-ups get their own window.
+		; OnClosed(wm): the page closed itself (window.close()), e.g. a sign-in pop-up that finished.
+		this.OnPopup := 0, this.OnClosed := 0, this.opener := 0, this.closed := false
 		this.DefaultTimeout := 10000
 		SplitPath(A_LineFile, , &dir)
 		this.dir := dir
@@ -30,12 +33,19 @@ class WebManip {
 			g.OnEvent('Size', (gui, minMax, *) => minMax != -1 && this.HasOwnProp('ctrl') && this.Fill())
 			if !opts.HasProp('exitOnClose') || opts.exitOnClose
 				g.OnEvent('Close', (*) => ExitApp())
+			else
+				g.OnEvent('Close', (*) => this.Close())
 			g.Show('w' (opts.HasProp('width') ? opts.width : 1200) ' h' (opts.HasProp('height') ? opts.height : 800))
 			hostHwnd := g.Hwnd
 		}
 		this.hwnd := hostHwnd
 		dataDir := opts.HasProp('dataDir') ? opts.dataDir : dir '\WebView2Data'
-		this.ctrl := WebView2.CreateControllerAsync(hostHwnd, 0, dataDir, '', dir '\WebView2Loader.dll').await()
+		; pop-ups must share the opener's environment so they stay linked to it
+		this.env := opts.HasProp('env') ? opts.env
+			: WebView2.CreateEnvironmentAsync(0, dataDir, '', dir '\WebView2Loader.dll').await()
+		this.ctrl := this.env.CreateCoreWebView2ControllerAsync(hostHwnd).await()
+		if opts.HasProp('hidden') && opts.hidden
+			this.ctrl.IsVisible := false
 		this.wv := this.ctrl.CoreWebView2
 		this.wv.AddScriptToExecuteOnDocumentCreatedAsync(FileRead(dir '\wm_helper.js', 'UTF-8')).await()
 		this.wv.add_WebMessageReceived((s, a) => this._OnMessage(a))
@@ -43,6 +53,7 @@ class WebManip {
 		this.wv.add_NavigationCompleted((s, a) => this._OnNavCompleted(a))
 		this.wv.add_SourceChanged((s, a) => this._Fire('OnNavigated'))
 		this.wv.add_NewWindowRequested((s, a) => this._OnNewWindow(a))
+		this.wv.add_WindowCloseRequested((s, a) => this._OnCloseRequested())
 		if opts.HasProp('url')
 			this.Navigate(opts.url, false)
 	}
@@ -294,10 +305,40 @@ class WebManip {
 		this._Fire('OnLoaded')
 	}
 	_OnNewWindow(args) {
-		; Open popups / target=_blank links in this same view instead of a separate window.
-		uri := args.Uri
-		args.Handled := true
-		SetTimer(() => this.wv.Navigate(uri), -1)
+		; Give the pop-up a real browser of its own that stays linked to this page (window.opener),
+		; so sign-in pop-ups can report back and close themselves.
+		deferral := args.GetDeferral()
+		SetTimer(() => this._OpenPopup(args, deferral), -1) ; build it outside the COM callback
+	}
+	_OpenPopup(args, deferral) {
+		try {
+			if this.OnPopup   ; the host places it (hidden until then)
+				pop := WebManip(this.hwnd, {env: this.env, hidden: true})
+			else              ; its own window; closes itself when the page closes
+				pop := WebManip(0, {env: this.env, title: 'Pop-up', width: 700, height: 750, exitOnClose: false})
+			pop.opener := this
+			args.NewWindow := pop.wv
+		} catch {
+			try deferral.Complete() ; fall back to WebView2's own pop-up window
+			return
+		}
+		deferral.Complete()
+		this._Fire('OnPopup', pop)
+	}
+	_OnCloseRequested() {
+		if this.OnClosed
+			this._Fire('OnClosed', this)   ; the host removes it, then calls .Close()
+		else
+			SetTimer(() => this.Close(), -1)
+	}
+	/** Shuts this browser down (and its window, if it made one). */
+	Close() {
+		if this.closed
+			return
+		this.closed := true
+		try this.ctrl.Close()
+		if this.gui
+			try this.gui.Destroy()
 	}
 	_Fire(name, args*) {
 		if fn := this.%name%

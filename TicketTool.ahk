@@ -15,6 +15,9 @@
  *   app.Fields['Ticket'].Value   read/write a field: Ticket, Description, Account, Category, Symptom
  *   app.List                     the ListView (app.List.Add(, 'col1', 'col2', ...))
  *   app.ShowTab('AOS')           switch tab by name or number
+ *
+ * Pop-ups (like sign-in windows) open in an extra "Pop-up ✕" tab and close by themselves
+ * when the site is done with them. Right-click a pop-up tab to close it yourself.
  ***********************************************************************/
 
 ; ---- Tabs: name and start page (leave url '' for a blank page) ----
@@ -79,6 +82,7 @@ class TicketApp {
 		this.tab := g.Add('Tab3', '', this.names)
 		this.tab.UseTab()
 		this.tab.OnEvent('Change', (*) => this.ShowTab(this.tab.Value))
+		this.tab.OnEvent('ContextMenu', ObjBindMethod(this, '_TabRightClick'))   ; right-click a pop-up tab to close it
 
 		; address bar under the tabs; it always works on the tab that is showing
 		this.navBack := g.Add('Button', '', '◀')
@@ -106,7 +110,8 @@ class TicketApp {
 		this.views := []
 		for n, t in tabs {
 			wm := WebManip(g.Hwnd, t.url != '' ? {url: t.url} : {})
-			wm.OnNavigated := ObjBindMethod(this, '_UrlChanged', n)
+			wm.OnNavigated := ObjBindMethod(this, '_UrlChanged', wm)
+			wm.OnPopup := ObjBindMethod(this, '_AddPopup')
 			this.Web[t.name] := wm
 			this.views.Push(wm)
 		}
@@ -133,7 +138,43 @@ class TicketApp {
 		this.tab.Value := i
 		for n, wm in this.views
 			wm.ctrl.IsVisible := (n = i)
-		this._UrlChanged(i)
+		this._UrlChanged(this.views[i])
+	}
+
+	; ---- pop-ups (e.g. sign-in windows) open as an extra tab and close when they're done
+	_AddPopup(pop) {
+		pop.OnNavigated := ObjBindMethod(this, '_UrlChanged', pop)
+		pop.OnPopup := ObjBindMethod(this, '_AddPopup')
+		pop.OnClosed := ObjBindMethod(this, '_RemovePopup')
+		this.views.Push(pop), this.names.Push('Pop-up ✕')
+		this.tab.Add(['Pop-up ✕'])
+		if this.HasOwnProp('webRect')
+			pop.SetBounds(this.webRect*)
+		this.ShowTab(this.views.Length)
+	}
+
+	_RemovePopup(pop) {
+		for i, wm in this.views
+			if wm = pop {
+				this.views.RemoveAt(i), this.names.RemoveAt(i)
+				this.tab.Delete(i)
+				break
+			}
+		pop.Close()
+		; go back to the tab that opened it
+		back := 1
+		for i, wm in this.views
+			if wm = pop.opener
+				back := i
+		this.ShowTab(back)
+	}
+
+	_TabRightClick(tab, item, isRightClick, x, y) {
+		tab.GetPos(&tx, &ty)
+		ht := Buffer(12, 0), NumPut('int', x - tx, 'int', y - ty, ht)
+		i := SendMessage(0x130D, 0, ht, tab) + 1   ; TCM_HITTEST: which tab was clicked
+		if i > this.Web.Count && i <= this.views.Length   ; pop-up tabs come after the fixed ones
+			this._RemovePopup(this.views[i])
 	}
 
 	GoUrl() {
@@ -147,9 +188,9 @@ class TicketApp {
 				MsgBox('Could not open that address:`n`n' e.Message, 'Ticket Tool', 'Icon!')
 	}
 
-	_UrlChanged(n) {   ; a tab's page changed: update the address box if that tab is showing
-		if n = this.tab.Value {
-			url := this.views[n].Url
+	_UrlChanged(wm) {   ; a tab's page changed: update the address box if that tab is showing
+		if !wm.closed && wm = this.Current {
+			url := wm.Url
 			this.urlBox.Value := url = 'about:blank' ? '' : url
 		}
 	}
@@ -191,9 +232,10 @@ class TicketApp {
 		this.urlBox.Move(ux, ny + S(1), tw - (ux - tx) - goW - S(4), nh - S(2))
 		this.navGo.Move(tx + tw - goW, ny, goW, nh)
 		wy := ny + nh + S(4)
+		this.webRect := [tx, wy, tw, h - m - wy]
 		if this.HasOwnProp('views')
 			for wm in this.views
-				wm.SetBounds(tx, wy, tw, h - m - wy)
+				wm.SetBounds(this.webRect*)
 
 		; repaint the whole window and every control so nothing is left half-drawn
 		; RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW
