@@ -93,15 +93,35 @@ class WebManip {
 	/** Runs JavaScript in the top page and returns the result (objects come back as Map/Array). */
 	JS(code) => JSON.Parse(this.wv.ExecuteScriptAsync(code).await())
 	/**
-	 * Cookies the browser holds for a web address (all sites if url is ''), including HttpOnly ones.
-	 * Returns a Map of name -> value (names are not case sensitive).
+	 * Cookies the browser holds for a site, including HttpOnly ones. Returns a Map of name -> value
+	 * (names are not case sensitive).
+	 * site: a domain ('con.portal.com') or any address on it ('https://con.portal.com/x'); '' = every site.
+	 * Matches by domain only (any path, http or https), and includes cookies set on parent domains
+	 * (.portal.com) and on subdomains (api.con.portal.com).
 	 */
-	Cookies(url := '') {
+	Cookies(site := '') {
 		m := Map(), m.CaseSense := false
-		for c in this.wv.CookieManager.GetCookiesAsync(url).await()
-			m[c.Name] := c.Value
+		host := WebManip._Host(site)
+		for c in this.wv.CookieManager.GetCookiesAsync('').await() {
+			d := LTrim(StrLower(c.Domain), '.')
+			if host = '' || d = host || WebManip._EndsWith(host, '.' d) || WebManip._EndsWith(d, '.' host)
+				m[c.Name] := c.Value
+		}
 		return m
 	}
+	/** Every cookie the browser holds, as an Array of {Name, Value, Domain, Path} (for troubleshooting). */
+	AllCookies() {
+		out := []
+		for c in this.wv.CookieManager.GetCookiesAsync('').await()
+			out.Push({Name: c.Name, Value: c.Value, Domain: c.Domain, Path: c.Path})
+		return out
+	}
+	static _Host(site) {   ; 'https://Con.Portal.com:8443/x?y' -> 'con.portal.com'
+		site := RegExReplace(Trim(site), 'i)^[a-z][a-z0-9+.-]*://')
+		site := RegExReplace(site, '[/?#:].*$')
+		return LTrim(StrLower(site), '.')
+	}
+	static _EndsWith(s, tail) => StrLen(s) >= StrLen(tail) && SubStr(s, -StrLen(tail)) = tail
 	Fill() => this.ctrl.Fill()
 	SetBounds(x, y, w, h) {
 		rc := Buffer(16), NumPut('int', x, 'int', y, 'int', x + w, 'int', y + h, rc)

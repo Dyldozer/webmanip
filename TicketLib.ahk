@@ -41,7 +41,8 @@ OpenRowPages(app, ticket, account) {
 
 GATHER_URL := ''                   ; page to open (it sets the cookies; sign in there if asked)
 GATHER_COOKIES := []               ; cookie names to wait for, e.g. ['JSESSIONID', 'XSRF-TOKEN']
-GATHER_COOKIE_URL := ''            ; site the cookies belong to (usually the API's address). '' = GATHER_URL
+GATHER_COOKIE_URL := ''            ; site the cookies belong to: the Domain shown in F12 > Application > Cookies,
+                                   ; e.g. 'con.portal.com' (an https:// address works too). '' = GATHER_URL's site
 GATHER_TIMEOUT := 120000           ; how long to wait, in ms (time to sign in)
 
 Gathered := Map()                  ; the last cookies gathered (name -> value); Http() sends these
@@ -61,6 +62,7 @@ GatherCookies(app, url := '', names := '', cookieUrl := '', timeout := '') {
 		throw ValueError('Set GATHER_URL in TicketLib.ahk first.', -1)
 	wm := app.AddTab('Gathering… ✕', url)
 	end := A_TickCount + timeout
+	c := Map(), missing := '', lastErr := ''
 	try loop {
 		if wm.closed
 			throw Error('The tab was closed before the cookies were found.', -1)
@@ -74,12 +76,36 @@ GatherCookies(app, url := '', names := '', cookieUrl := '', timeout := '') {
 				Gathered := c
 				return c
 			}
-		}
+		} catch as e
+			lastErr := e.Message
 		if A_TickCount > end
-			throw TimeoutError('Timed out waiting for cookies: ' Trim(missing), -1)
+			throw TimeoutError(_GatherReport(wm, cookieUrl, c, missing, lastErr), -1)
 		Sleep(500)
 	} finally
 		app.RemoveTab(wm)
+}
+
+_GatherReport(wm, cookieUrl, found, missing, lastErr) {   ; explains a timeout so it can be fixed
+	msg := 'Timed out waiting for: ' Trim(missing) '`n`nLooked for cookies on: ' cookieUrl
+	seen := ''
+	for k in found
+		seen .= (seen = '' ? '' : ', ') k
+	msg .= '`nCookies found there: ' (seen = '' ? '(none)' : seen)
+	if seen = '' {   ; nothing on that site: list the domains the browser does have cookies for
+		doms := Map()
+		try for ck in wm.AllCookies()
+			doms[LTrim(ck.Domain, '.')] := 1
+		list := '', shown := 0
+		for d in doms
+			if ++shown <= 25
+				list .= (list = '' ? '' : ', ') d
+		if doms.Count > 25
+			list .= ' … and ' (doms.Count - 25) ' more'
+		msg .= '`nSites the browser has cookies for: ' (list = '' ? '(none)' : list)
+	}
+	if lastErr != ''
+		msg .= '`n`nLast error: ' lastErr
+	return msg
 }
 
 /** For a button: gathers the cookies and says how it went. */
